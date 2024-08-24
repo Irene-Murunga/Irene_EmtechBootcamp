@@ -25,6 +25,7 @@ urlpatterns = [
     path('api/v1/expenses/', include('expenses.urls')),
     path('api/v1/suppliers/', include('suppliers.urls')),
     path('api/v1/schools/', include('schools.urls')),
+    path('api/v1/feeextensions/', include('feeextensions.urls')),
     path('api/v1/fee/', include('fee.urls')),
     path('api/v1/payfee/', include('payfee.urls')),
     path('api/v1/parents/', include('parents.urls')),

@@ -1,115 +1,119 @@
-from datetime import datetime, timedelta, timezone, date
-from django.shortcuts import render
+from django.shortcuts import render, redirect, get_object_or_404
+from django.contrib import messages
+from django.core.mail import send_mail
+from django.contrib.auth.decorators import login_required
 from rest_framework import viewsets, status
-from rest_framework.response import Response
-from feeextensions.models import FeeExtensions
-from feeextensions.serializers import FeeExtensionsSerializers
-from utils.ApiResponse import ApiResponse
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.authentication import SessionAuthentication, BasicAuthentication
-from rest_framework_jwt.authentication import JSONWebTokenAuthentication
-from utils.Helpers import Helpers
-from utils.Helpers import calculate_next_due_date
+from .models import FeeExtensions, StudentAccount
+from students.models import Students
+from studentsparents.models import StudentsParents
 from .forms import FeeExtensionForm
-from .models import FeeExtensions
-from django.http import HttpResponseRedirect
-from django.contrib.auth.models import User
-from users.models import CustomUser
-# from notifications import send_notification_to_user, send_notification_to_school_administration
+from .serializers import FeeExtensionsSerializer
+from rest_framework.response import Response
 
-class FeeExtensionsView(viewsets.ModelViewSet):
-    queryset = FeeExtensions.objects.all()
-    serializer_class = FeeExtensionsSerializers
-    # pagination_class = PageNumberPagination
-    # authentication_classes = [JSONWebTokenAuthentication, SessionAuthentication, BasicAuthentication]
-    # permission_classes = [IsAuthenticated]
 
-    def list(self, request, *args, **kwargs):
-        response = ApiResponse()
-        data = list(FeeExtensions.objects.all().values())
-        response.setStatusCode(status.HTTP_200_OK)
-        response.setMessage("Found")
-        response.setEntity(data)
-        return Response(response.toDict(), status=response.status)
+@login_required
+def create_fee_extension(request, student_id):
+    student = get_object_or_404(Students, pk=student_id)
+    student_account = get_object_or_404(StudentAccount, student=student)
+    parent = get_object_or_404(StudentsParents, studentID=student).parentID
+    outstanding_balance = student_account.balance
 
-    def create(self, request, *args, **kwargs):
-        response = ApiResponse()
-        FeeExtensionsData = FeeExtensionsSerializers(data=request.data)
-
-        if not FeeExtensionsData.is_valid():
-            status_code = status.HTTP_400_BAD_REQUEST
-            return Response({"message": "Please fill in the details correctly.", "status": status_code}, status_code)
-        FeeExtensionsData.save()
-        response.setStatusCode(status.HTTP_201_CREATED)
-        response.setMessage("FeeExtension created")
-        response.setEntity(request.data)
-        return Response(response.toDict(), status=response.status)
-
-    def destroy(self, request, *args, **kwargs):
-
-        regionData = FeeExtensions.objects.filter(id=kwargs['pk'])
-        if regionData:
-            regionData.delete()
-            status_code = status.HTTP_200_OK
-            return Response({"message": "FeeExtension deleted Successfully", "status": status_code})
-        else:
-            status_code = status.HTTP_400_BAD_REQUEST
-            return Response({"message": "FeeExtension data not found", "status": status_code})
-
-    def update(self, request, *args, **kwargs):
-        users_details = FeeExtensions.objects.get(id=kwargs['pk'])
-        users_serializer_data = FeeExtensionsSerializers(
-            users_details, data=request.data, partial=True)
-        if users_serializer_data.is_valid():
-            users_serializer_data.save()
-            status_code = status.HTTP_201_CREATED
-            return Response({"message": "FeeExtension Updated Successfully", "status": status_code})
-        else:
-            status_code = status.HTTP_400_BAD_REQUEST
-            return Response({"message": "FeeExtension data Not found", "status": status_code})
-
-def create_fee_extension(request):
     if request.method == 'POST':
         form = FeeExtensionForm(request.POST)
         if form.is_valid():
-            fee_extension = form.save()
-            # send_notification_to_user(fee_extension.user)
-            # send_notification_to_school_administration(fee_extension.school_code)
-            # messages.success(request, 'Fee extension created successfully.')
-            return HttpResponseRedirect('/success/')
+            fee_extension = form.save(commit=False)
+            fee_extension.student = student
+            fee_extension.student_account = student_account
+            fee_extension.save()
+
+            # Send notification to admin
+            send_mail(
+                'New Fee Extension Request',
+                f'A new fee extension request has been created for {student.firstName} {student.lastName}.',
+                'from@example.com',
+                ['admin@example.com'],
+            )
+
+            # Send notification to parent
+            send_mail(
+                'Fee Extension Request Created',
+                f'Your fee extension request for {student.firstName} {student.lastName} has been created and is pending approval.',
+                'from@example.com',
+                [parent.email],
+            )
+
+            messages.success(request, 'Fee extension request created successfully.')
+            return redirect('fee_extension_method', fee_extension.id)
     else:
-        form = FeeExtensionForm()
-    return render(request, 'create_fee_extension.html', {'form': form})
+        form = FeeExtensionForm(initial={'outstanding_balance': outstanding_balance})
 
-def save(self, *args, **kwargs):
-    if not self.dueDate and self.end_date:
-        self.dueDate = self.end_date
-    # Calculate the next due date based on the selected payment frequency
-    if self.dueDate and self.dueDate < date.today():
-        self.dueDate = calculate_next_due_date(self.dueDate, self.frequency)
+    return render(request, 'feeextensions/create_fee_extension.html', {'form': form, 'student': student})
 
-    super().save(*args, **kwargs)
 
-def send_reminders():
-    # Get fee extensions with due dates approaching
-    upcoming_due_date_fee_extensions = FeeExtensions.objects.filter(
-        dueDate__lte=timezone.now() + timedelta(days=3)  # Adjust the reminder window as needed
-    )
-    for fee_extension in upcoming_due_date_fee_extensions:
-        user = fee_extension.user
-        user_profile = user.profile  # Assuming you have a related profile model linked to the User model
+@login_required
+def fee_extension_method(request, fee_extension_id):
+    fee_extension = get_object_or_404(FeeExtensions, pk=fee_extension_id)
 
-        # Send reminder to user's email
-        send_email(user_profile.email, "Reminder: Payment Due",
-                   "Dear {}, this is a reminder that your payment is due soon.".format(user.username))
+    if request.method == 'POST':
+        method_of_payment = request.POST.get('method_of_payment')
+        fee_extension.method_of_payment = method_of_payment
+        fee_extension.save()
 
-        # Send reminder to user's phone number
-        send_sms(user_profile.phone_number, "Reminder: Payment Due")
+        # Send notification to admin
+        send_mail(
+            'Fee Extension Payment Method Set',
+            f'The payment method for fee extension request {fee_extension.id} has been set to {method_of_payment}.',
+            'from@example.com',
+            ['admin@example.com'],
+        )
 
-def send_email(email, subject, message):
-    # Implement email sending logic (e.g., using Django's send_mail function)
-    pass
+        # Send notification to parent
+        parent = get_object_or_404(StudentsParents, studentID=fee_extension.student).parentID
+        send_mail(
+            'Payment Method Set for Fee Extension',
+            f'The payment method for your fee extension request for {fee_extension.student.firstName} {fee_extension.student.lastName} has been set to {method_of_payment}.',
+            'from@example.com',
+            [parent.email],
+        )
 
-def send_sms(phone_number, message):
-    # Implement SMS sending logic (e.g., using a third-party service or SMS gateway)
-    pass
+        messages.success(request, 'Payment method set successfully.')
+        return redirect('fee_extension_details', fee_extension.id)
+
+    return render(request, 'feeextensions/fee_extension_method.html', {'fee_extension': fee_extension})
+
+
+class FeeExtensionsView(viewsets.ModelViewSet):
+    queryset = FeeExtensions.objects.all()
+    serializer_class = FeeExtensionsSerializer
+
+    def create(self, request, *args, **kwargs):
+        student = get_object_or_404(Students, id=request.data.get('student'))
+        student_account = get_object_or_404(StudentAccount, student=student)
+
+        # Check if the account has an outstanding balance
+        if student_account.balance <= 0:
+            return Response({"error": "No outstanding balance to create a fee extension."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        request.data['student_account'] = student_account.id
+
+        serializer = self.get_serializer(data=request.data)
+        if serializer.is_valid():
+            fee_extension = serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def update(self, request, *args, **kwargs):
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        if serializer.is_valid():
+            fee_extension = serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def perform_create(self, serializer):
+        serializer.save()
+
+    def perform_update(self, serializer):
+        serializer.save()

@@ -72,7 +72,8 @@ INSTALLED_APPS = [
     'transactions',
     'expenses',
     'suppliers',
-     'fee',
+    'fee',
+    'feeextensions',
     'schools',
     'payfee',
     'inquiries',
@@ -173,7 +174,7 @@ WSGI_APPLICATION = 'edutech_payment_engine.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
-        'NAME': 'jaribio_db',
+        'NAME': 'edutech_payments_db',
         'USER': 'root',
         'PASSWORD': "",
         'HOST': '127.0.0.1',
